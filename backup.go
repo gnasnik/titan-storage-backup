@@ -39,15 +39,24 @@ type Downloader struct {
 	lk         sync.Mutex
 	schedulers []*Scheduler
 
-	JobQueue chan []*model.Asset
+	JobQueue chan *model.Asset
 	dirSize  map[string]int64
 	token    string
 	running  bool
 
 	etcdClient *EtcdClient
+
+	concurrent      int
+	downWorkerQueue chan worker
 }
 
-func newDownloader(token string, client *EtcdClient) *Downloader {
+type job func()
+
+type worker struct {
+	jobQueue chan job
+}
+
+func newDownloader(token string, client *EtcdClient, concurrent int) *Downloader {
 	// 从 Etcd 上获取所有调度器的配置
 	schedulers, err := FetchSchedulersFromEtcd(client)
 	if err != nil {
@@ -59,11 +68,12 @@ func newDownloader(token string, client *EtcdClient) *Downloader {
 	}
 
 	return &Downloader{
-		JobQueue:   make(chan []*model.Asset, 1),
-		dirSize:    make(map[string]int64),
-		schedulers: schedulers,
-		token:      token,
-		etcdClient: client,
+		JobQueue:        make(chan *model.Asset, 1),
+		dirSize:         make(map[string]int64),
+		schedulers:      schedulers,
+		token:           token,
+		etcdClient:      client,
+		downWorkerQueue: make(chan worker, concurrent),
 	}
 }
 
@@ -71,7 +81,11 @@ func (d *Downloader) Push(jobs []*model.Asset) {
 	d.lk.Lock()
 	defer d.lk.Unlock()
 
-	d.JobQueue <- jobs
+	for _, j := range jobs {
+		d.JobQueue <- j
+	}
+
+	d.running = false
 }
 
 func (d *Downloader) create(ctx context.Context, job *model.Asset) (*model.Asset, error) {
@@ -151,7 +165,7 @@ func (d *Downloader) async() {
 		select {
 		case <-ticker.C:
 			if d.running {
-				log.Errorf("backup processing...")
+				log.Infof("backup processing...")
 				continue
 			}
 
@@ -163,11 +177,11 @@ func (d *Downloader) async() {
 				continue
 			}
 
+			log.Infof("fetch %d jobs", len(assets))
+
 			if len(assets) == 0 {
 				continue
 			}
-
-			log.Infof("fetch %d jobs", len(assets))
 
 			d.Push(assets)
 			ticker.Reset(backupInterval)
@@ -177,28 +191,81 @@ func (d *Downloader) async() {
 }
 
 func (d *Downloader) run() {
+	d.initDownWorker()
+
 	for {
-		select {
-		case jobs := <-d.JobQueue:
 
-			for _, job := range jobs {
-				j, err := d.create(context.Background(), job)
-				if err != nil {
-					log.Errorf("download: %v", err)
-				}
+		// get idle worker
+		w := <-d.downWorkerQueue
 
-				log.Infof("process job: %s event: %d, path: %s", j.Cid, j.Event, j.Path)
+		// get asset to download
+		asset := <-d.JobQueue
 
-				err = pushResult(d.token, []*model.Asset{job})
-				if err != nil {
-					log.Errorf("push result: %v", err)
-				}
+		// push job queue
+		w.jobQueue <- d.jobProcess(asset)
+
+		go func() {
+			select {
+			case jobFunc := <-w.jobQueue:
+
+				// handler job
+				jobFunc()
+
+				// push back worker queue
+				d.downWorkerQueue <- w
 			}
+		}()
 
-			d.running = false
+	}
 
+	//for {
+	//	select {
+	//	case jobs := <-d.JobQueue:
+	//
+	//		for _, job := range jobs {
+	//
+	//			j, err := d.create(context.Background(), job)
+	//			if err != nil {
+	//				log.Errorf("download: %v", err)
+	//			}
+	//
+	//			log.Infof("process job: %s event: %d, path: %s", j.Cid, j.Event, j.Path)
+	//
+	//			err = pushResult(d.token, []*model.Asset{job})
+	//			if err != nil {
+	//				log.Errorf("push result: %v", err)
+	//			}
+	//
+	//		}
+	//
+	//		d.running = false
+	//
+	//	}
+	//
+	//}
+}
+
+func (d *Downloader) jobProcess(asset *model.Asset) job {
+	return func() {
+		j, err := d.create(context.Background(), asset)
+		if err != nil {
+			log.Errorf("download: %v", err)
 		}
 
+		log.Infof("process job: %s event: %d, path: %s", j.Cid, j.Event, j.Path)
+
+		err = pushResult(d.token, []*model.Asset{asset})
+		if err != nil {
+			log.Errorf("push result: %v", err)
+		}
+	}
+}
+
+func (d *Downloader) initDownWorker() {
+	for i := 0; i < d.concurrent; i++ {
+		d.downWorkerQueue <- worker{
+			jobQueue: make(chan job, 1),
+		}
 	}
 }
 

@@ -31,7 +31,7 @@ func main() {
 		log.Fatal("New etcdClient Failed: %v", err)
 	}
 
-	downloader := newDownloader(token, client)
+	downloader := newDownloader(token, client, 5)
 	go downloader.async()
 
 	log.Infof("Started")
