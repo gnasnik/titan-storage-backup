@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/Filecoin-Titan/titan/api/types"
 	"github.com/gnasnik/titan-explorer/core/generated/model"
-	"github.com/gnasnik/titan-explorer/core/statistics"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/pkg/errors"
 	"github.com/quic-go/quic-go/http3"
@@ -38,19 +37,19 @@ var backupInterval = time.Minute * 10
 
 type Downloader struct {
 	lk         sync.Mutex
-	schedulers []*statistics.Scheduler
+	schedulers []*Scheduler
 
 	JobQueue chan []*model.Asset
 	dirSize  map[string]int64
 	token    string
 	running  bool
 
-	etcdClient *statistics.EtcdClient
+	etcdClient *EtcdClient
 }
 
-func newDownloader(token string, client *statistics.EtcdClient) *Downloader {
+func newDownloader(token string, client *EtcdClient) *Downloader {
 	// 从 Etcd 上获取所有调度器的配置
-	schedulers, err := statistics.FetchSchedulersFromEtcd(client)
+	schedulers, err := FetchSchedulersFromEtcd(client)
 	if err != nil {
 		log.Fatalf("fetch scheduler from etcd Failed: %v", err)
 	}

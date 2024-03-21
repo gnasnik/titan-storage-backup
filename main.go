@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"github.com/gnasnik/titan-explorer/core/statistics"
 	logging "github.com/ipfs/go-log/v2"
 )
 
@@ -27,7 +26,7 @@ func main() {
 
 	var address []string
 	address = append(address, etcd)
-	client, err := statistics.NewEtcdClient(address)
+	client, err := NewEtcdClient(address)
 	if err != nil {
 		log.Fatal("New etcdClient Failed: %v", err)
 	}
