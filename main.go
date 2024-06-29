@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	logging "github.com/ipfs/go-log/v2"
+	"strings"
 )
 
 var (
@@ -10,6 +11,7 @@ var (
 	user     string
 	password string
 	token    string
+	areaId   string
 )
 
 func init() {
@@ -17,6 +19,7 @@ func init() {
 	flag.StringVar(&user, "user", "", "etcd user")
 	flag.StringVar(&password, "password", "", "etcd password")
 	flag.StringVar(&token, "token", "", "storage api authenticate token")
+	flag.StringVar(&areaId, "area_id", "", "scheduler area id")
 }
 
 func main() {
@@ -24,14 +27,13 @@ func main() {
 
 	logging.SetDebugLogging()
 
-	var address []string
-	address = append(address, etcd)
-	client, err := NewEtcdClient(address)
+	addresses := strings.Split(etcd, ",")
+	client, err := NewEtcdClient(addresses)
 	if err != nil {
 		log.Fatal("New etcdClient Failed: %v", err)
 	}
 
-	downloader := newDownloader(token, client, 5)
+	downloader := newDownloader(token, areaId, client, 5)
 	go downloader.async()
 
 	log.Infof("Started")

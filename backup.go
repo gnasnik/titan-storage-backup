@@ -26,14 +26,15 @@ const (
 	maxSingleDirSize  = 18 << 30
 	ErrorEventID      = 99
 	BackupOutPath     = "/carfile/titan"
-	StorageAPI        = "https://api-storage.container1.titannet.io"
-	BackupResult      = "/v1/storage/backup_result"
-	BackupAssets      = "/v1/storage/backup_assets"
+	StorageAPI        = "https://api-test1.container1.titannet.io"
+
+	BackupResult = "/v1/storage/backup_result"
+	BackupAssets = "/v1/storage/backup_assets"
 )
 
 var log = logging.Logger("backup")
 
-var backupInterval = time.Minute * 10
+var backupInterval = time.Second * 60
 
 type Downloader struct {
 	lk         sync.Mutex
@@ -42,22 +43,25 @@ type Downloader struct {
 	JobQueue chan *model.Asset
 	dirSize  map[string]int64
 	token    string
+	areaId   string
 	running  bool
 
 	etcdClient *EtcdClient
 
 	concurrent      int
 	downWorkerQueue chan worker
+	dlk             sync.Mutex
+	downloading     map[string]struct{}
 }
 
 type job func()
 
 type worker struct {
+	ID       int
 	jobQueue chan job
 }
 
-func newDownloader(token string, client *EtcdClient, concurrent int) *Downloader {
-	// 从 Etcd 上获取所有调度器的配置
+func newDownloader(token string, areaId string, client *EtcdClient, concurrent int) *Downloader {
 	schedulers, err := FetchSchedulersFromEtcd(client)
 	if err != nil {
 		log.Fatalf("fetch scheduler from etcd Failed: %v", err)
@@ -68,18 +72,22 @@ func newDownloader(token string, client *EtcdClient, concurrent int) *Downloader
 	}
 
 	return &Downloader{
-		JobQueue:        make(chan *model.Asset, 1),
-		dirSize:         make(map[string]int64),
-		schedulers:      schedulers,
-		token:           token,
-		etcdClient:      client,
+		JobQueue:   make(chan *model.Asset, 1),
+		dirSize:    make(map[string]int64),
+		schedulers: schedulers,
+		areaId:     areaId,
+		token:      token,
+		etcdClient: client,
+
 		downWorkerQueue: make(chan worker, concurrent),
+		concurrent:      concurrent,
+		downloading:     make(map[string]struct{}),
 	}
 }
 
 func (d *Downloader) Push(jobs []*model.Asset) {
-	d.lk.Lock()
-	defer d.lk.Unlock()
+	//d.lk.Lock()
+	//defer d.lk.Unlock()
 
 	for _, j := range jobs {
 		d.JobQueue <- j
@@ -96,7 +104,20 @@ func (d *Downloader) create(ctx context.Context, job *model.Asset) (*model.Asset
 		return nil, err
 	}
 
-	err = d.download(ctx, outPath, job.Cid, job.TotalSize)
+	var s *Scheduler
+
+	for _, sd := range d.schedulers {
+		if sd.AreaId == d.areaId {
+			s = sd
+			break
+		}
+	}
+
+	if s == nil {
+		return nil, errors.New("no scheduler found")
+	}
+
+	err = d.download(ctx, s, outPath, job.Cid, job.TotalSize)
 	if err != nil {
 		log.Errorf("download CARFile %s: %v", job.Cid, err)
 		job.Event = ErrorEventID
@@ -107,54 +128,52 @@ func (d *Downloader) create(ctx context.Context, job *model.Asset) (*model.Asset
 	return job, nil
 }
 
-func (d *Downloader) download(ctx context.Context, outPath, cid string, size int64) error {
-	var outErr error
-
-	for _, scheduler := range d.schedulers {
-		downloadInfos, err := scheduler.Api.GetCandidateDownloadInfos(ctx, cid)
-		if err != nil {
-			log.Errorf("GetCandidateDownloadInfos: %v", err)
-			outErr = err
-			continue
-		}
-
-		if len(downloadInfos) == 0 {
-			outErr = errors.New(fmt.Sprintf("CARFile %s not found", cid))
-			continue
-		}
-
-		for _, downloadInfo := range downloadInfos {
-			reader, err := request(downloadInfo.Address, cid, downloadInfo.Tk)
-			if err != nil {
-				log.Errorf("download requeset: %v", err)
-				outErr = err
-				continue
-			}
-
-			file, err := os.Create(filepath.Join(outPath, cid+".car"))
-			if err != nil {
-				outErr = err
-				return err
-			}
-
-			_, err = io.Copy(file, reader)
-			if err != nil {
-				outErr = err
-				return err
-			}
-
-			d.lk.Lock()
-			d.dirSize[outPath] += size
-			d.lk.Unlock()
-
-			outErr = nil
-
-			log.Infof("Successfully download CARFile %s.\n", outPath)
-			return nil
+func (d *Downloader) GetScheduler(areaId string) *Scheduler {
+	for _, s := range d.schedulers {
+		if s.AreaId == areaId {
+			return s
 		}
 	}
+	return nil
+}
 
-	return outErr
+func (d *Downloader) download(ctx context.Context, scheduler *Scheduler, outPath, cid string, size int64) error {
+	downloadInfos, err := scheduler.Api.GetAssetSourceDownloadInfo(ctx, cid)
+	if err != nil {
+		log.Errorf("GetAssetSourceDownloadInfo: %v", err)
+		return err
+	}
+
+	if len(downloadInfos.SourceList) == 0 {
+		return errors.New(fmt.Sprintf("CARFile %s not found", cid))
+	}
+
+	for _, downloadInfo := range downloadInfos.SourceList {
+		reader, err := request(downloadInfo.Address, cid, downloadInfo.Tk)
+		if err != nil {
+			log.Errorf("download requeset: %v", err)
+			continue
+		}
+
+		file, err := os.Create(filepath.Join(outPath, cid+".car"))
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(file, reader)
+		if err != nil {
+			return err
+		}
+
+		d.lk.Lock()
+		d.dirSize[outPath] += size
+		d.lk.Unlock()
+
+		log.Infof("Successfully download CARFile %s.\n", outPath)
+		return nil
+	}
+
+	return nil
 }
 
 func (d *Downloader) async() {
@@ -180,6 +199,7 @@ func (d *Downloader) async() {
 			log.Infof("fetch %d jobs", len(assets))
 
 			if len(assets) == 0 {
+				d.running = false
 				continue
 			}
 
@@ -195,58 +215,39 @@ func (d *Downloader) run() {
 
 	for {
 
-		// get idle worker
-		w := <-d.downWorkerQueue
+		log.Infof("current worker queue: %d, job queue: %d", len(d.downWorkerQueue), len(d.JobQueue))
 
 		// get asset to download
 		asset := <-d.JobQueue
 
-		// push job queue
-		w.jobQueue <- d.jobProcess(asset)
-
-		go func() {
+		go func(a *model.Asset) {
 			select {
-			case jobFunc := <-w.jobQueue:
+			case w := <-d.downWorkerQueue:
+				// push job queue
+				jobFunc := d.jobProcess(a)
 
-				// handler job
 				jobFunc()
 
 				// push back worker queue
 				d.downWorkerQueue <- w
 			}
-		}()
+
+		}(asset)
 
 	}
-
-	//for {
-	//	select {
-	//	case jobs := <-d.JobQueue:
-	//
-	//		for _, job := range jobs {
-	//
-	//			j, err := d.create(context.Background(), job)
-	//			if err != nil {
-	//				log.Errorf("download: %v", err)
-	//			}
-	//
-	//			log.Infof("process job: %s event: %d, path: %s", j.Cid, j.Event, j.Path)
-	//
-	//			err = pushResult(d.token, []*model.Asset{job})
-	//			if err != nil {
-	//				log.Errorf("push result: %v", err)
-	//			}
-	//
-	//		}
-	//
-	//		d.running = false
-	//
-	//	}
-	//
-	//}
 }
 
 func (d *Downloader) jobProcess(asset *model.Asset) job {
 	return func() {
+		d.dlk.Lock()
+		if _, existing := d.downloading[asset.Cid]; existing {
+			log.Infof("cid %s is downloading...", asset.Cid)
+			d.dlk.Unlock()
+			return
+		}
+		d.downloading[asset.Cid] = struct{}{}
+		d.dlk.Unlock()
+
 		j, err := d.create(context.Background(), asset)
 		if err != nil {
 			log.Errorf("download: %v", err)
@@ -258,12 +259,19 @@ func (d *Downloader) jobProcess(asset *model.Asset) job {
 		if err != nil {
 			log.Errorf("push result: %v", err)
 		}
+
+		time.Sleep(time.Second)
+
+		d.dlk.Lock()
+		delete(d.downloading, asset.Cid)
+		d.dlk.Unlock()
 	}
 }
 
 func (d *Downloader) initDownWorker() {
 	for i := 0; i < d.concurrent; i++ {
 		d.downWorkerQueue <- worker{
+			ID:       i,
 			jobQueue: make(chan job, 1),
 		}
 	}
