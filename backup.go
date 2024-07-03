@@ -349,6 +349,7 @@ func request(url, cid string, token *types.Token) (io.ReadCloser, error) {
 	//req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 
 	client := http.Client{
+		Timeout: 1 * time.Hour,
 		Transport: &http3.RoundTripper{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
