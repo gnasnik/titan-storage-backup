@@ -4,6 +4,7 @@ go 1.22.0
 
 require (
 	github.com/Filecoin-Titan/titan v0.1.13
+	github.com/docker/go-units v0.5.0
 	github.com/gnasnik/titan-explorer v0.0.0-20240321022832-8216f80840f1
 	github.com/ipfs/go-log/v2 v2.5.1
 	github.com/pkg/errors v0.9.1

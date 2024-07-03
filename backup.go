@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Filecoin-Titan/titan/api/types"
+	"github.com/docker/go-units"
 	"github.com/gnasnik/titan-explorer/core/generated/model"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/pkg/errors"
@@ -148,6 +149,9 @@ func (d *Downloader) download(ctx context.Context, scheduler *Scheduler, outPath
 		return errors.New(fmt.Sprintf("CARFile %s not found", cid))
 	}
 
+	start := time.Now()
+	hrs := units.BytesSize(float64(size))
+
 	for _, downloadInfo := range downloadInfos.SourceList {
 		reader, err := request(downloadInfo.Address, cid, downloadInfo.Tk)
 		if err != nil {
@@ -169,7 +173,7 @@ func (d *Downloader) download(ctx context.Context, scheduler *Scheduler, outPath
 		d.dirSize[outPath] += size
 		d.lk.Unlock()
 
-		log.Infof("Successfully download CARFile %s.\n", outPath)
+		log.Infof("Successfully download CARFile %s, size: %s, cost: %v.\n", outPath, hrs, time.Since(start))
 		return nil
 	}
 
@@ -220,20 +224,16 @@ func (d *Downloader) run() {
 		// get asset to download
 		asset := <-d.JobQueue
 
-		go func(a *model.Asset) {
-			select {
-			case w := <-d.downWorkerQueue:
+		select {
+		case wrk := <-d.downWorkerQueue:
+			go func(a *model.Asset, w worker) {
 				// push job queue
 				jobFunc := d.jobProcess(a)
-
 				jobFunc()
-
 				// push back worker queue
 				d.downWorkerQueue <- w
-			}
-
-		}(asset)
-
+			}(asset, wrk)
+		}
 	}
 }
 
@@ -251,9 +251,12 @@ func (d *Downloader) jobProcess(asset *model.Asset) job {
 		j, err := d.create(context.Background(), asset)
 		if err != nil {
 			log.Errorf("download: %v", err)
+			return
 		}
 
-		log.Infof("process job: %s event: %d, path: %s", j.Cid, j.Event, j.Path)
+		if err == nil && j != nil {
+			log.Infof("process job: %s event: %d, path: %s", j.Cid, j.Event, j.Path)
+		}
 
 		err = pushResult(d.token, []*model.Asset{asset})
 		if err != nil {
