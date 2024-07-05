@@ -7,11 +7,12 @@ import (
 )
 
 var (
-	etcd     string
-	user     string
-	password string
-	token    string
-	areaId   string
+	etcd       string
+	user       string
+	password   string
+	token      string
+	areaId     string
+	concurrent int
 )
 
 func init() {
@@ -20,6 +21,7 @@ func init() {
 	flag.StringVar(&password, "password", "", "etcd password")
 	flag.StringVar(&token, "token", "", "storage api authenticate token")
 	flag.StringVar(&areaId, "area_id", "", "scheduler area id")
+	flag.IntVar(&concurrent, "concurrent", 5, "scheduler area id")
 }
 
 func main() {
@@ -33,7 +35,7 @@ func main() {
 		log.Fatal("New etcdClient Failed: %v", err)
 	}
 
-	downloader := newDownloader(token, areaId, client, 5)
+	downloader := newDownloader(token, areaId, client, concurrent)
 	go downloader.async()
 
 	log.Infof("Started")

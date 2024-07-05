@@ -251,7 +251,6 @@ func (d *Downloader) jobProcess(asset *model.Asset) job {
 		j, err := d.create(context.Background(), asset)
 		if err != nil {
 			log.Errorf("download: %v", err)
-			return
 		}
 
 		if err == nil && j != nil {
@@ -339,7 +338,7 @@ func request(url, cid string, token *types.Token) (io.ReadCloser, error) {
 
 	endpoint := fmt.Sprintf("%s%s/ipfs/%s?format=car", scheme, url, cid)
 
-	log.Debugf("endpoint: %s", endpoint)
+	log.Infof("downloading from endpoint: %s", endpoint)
 
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -349,7 +348,7 @@ func request(url, cid string, token *types.Token) (io.ReadCloser, error) {
 	//req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 
 	client := http.Client{
-		Timeout: 1 * time.Hour,
+		Timeout: 30 * time.Minute,
 		Transport: &http3.RoundTripper{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
